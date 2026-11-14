@@ -42,6 +42,7 @@ jobs:
         uses: bridgecrewio/checkov-action@master
         with:
           directory: terraform
+          config_file: .checkov.yaml
           framework: terraform
           output_format: cli,sarif
           output_file_path: console,checkov-results.sarif
@@ -85,7 +86,7 @@ jobs:
           fi
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: security-pipeline-app:ci
           format: sarif

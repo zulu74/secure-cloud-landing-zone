@@ -1,0 +1,23 @@
+# .checkov.yaml
+# Checkov findings explicitly accepted for this project, with the
+# reason recorded here rather than left as a silent --skip-check flag
+# in CI with no explanation. A real governance process writes down why
+# a risk is accepted, who accepted it, and under what conditions it
+# would need revisiting — this is the smallest version of that.
+
+skip-check:
+  - id: CKV_AWS_144
+    # "Ensure that S3 bucket has cross-region replication enabled"
+    # Accepted: this is a single-region dev/demo landing zone running
+    # against LocalStack. Cross-region replication has no second
+    # region to replicate into here, and would be pure cost/complexity
+    # with no benefit at this stage. Revisit if this ever becomes a
+    # real production deployment with a DR requirement.
+
+  - id: CKV2_AWS_62
+    # "Ensure S3 buckets should have event notifications enabled"
+    # Accepted: no downstream consumer (SNS/SQS/Lambda) exists yet to
+    # receive these events. Wiring up notifications with nothing
+    # listening on the other end is noise, not security. Revisit once
+    # scripts/posture_check.py (or an equivalent) is adapted to consume
+    # bucket event notifications instead of polling.

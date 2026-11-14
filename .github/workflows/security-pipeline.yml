@@ -1,0 +1,148 @@
+name: Security Pipeline
+
+# Shift-left gates: every PR touching this repo has to clear IaC
+# scanning, secret scanning, and container scanning before it can
+# merge. This is the part of "DevSecOps" that's actually a daily job —
+# not finding problems by hand, but making the pipeline refuse to
+# ship them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write # required for uploading SARIF to GitHub code scanning
+
+jobs:
+  iac-scan:
+    name: IaC security scan (tfsec + checkov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-sarif-action@v0.1.4
+        with:
+          working_directory: terraform
+          sarif_file: tfsec-results.sarif
+
+      - name: Upload tfsec SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: tfsec-results.sarif
+          category: tfsec
+
+      - name: Run Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          soft_fail: false # fail the build on any HIGH/CRITICAL finding
+
+      - name: Upload Checkov SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # scan full history, not just the latest commit
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: true
+
+  container-scan:
+    name: Container image scan (trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (skip if no Dockerfile yet)
+        run: |
+          if [ -f Dockerfile ]; then
+            docker build -t security-pipeline-app:ci .
+          else
+            echo "No Dockerfile present yet — building a placeholder so the scan job stays wired up."
+            echo -e "FROM alpine:3.20\nCMD [\"true\"]" > /tmp/Dockerfile.placeholder
+            docker build -t security-pipeline-app:ci -f /tmp/Dockerfile.placeholder /tmp
+          fi
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: security-pipeline-app:ci
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1 # fail the build on critical/high CVEs
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+  posture-check:
+    name: Cloud security posture check (LocalStack)
+    runs-on: ubuntu-latest
+    needs: [iac-scan]
+    services:
+      localstack:
+        image: localstack/localstack:3
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3,iam,sts,lambda,logs,ec2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.8.0"
+
+      - name: Wait for LocalStack
+        run: |
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:4566/_localstack/health && break
+            sleep 2
+          done
+
+      - name: Terraform init & apply against LocalStack
+        working-directory: terraform
+        run: |
+          terraform init -input=false
+          terraform apply -auto-approve -input=false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install posture-check dependencies
+        run: pip install --break-system-packages -r scripts/requirements.txt
+
+      - name: Run posture check
+        env:
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          AWS_ENDPOINT_URL: http://localhost:4566
+          AWS_DEFAULT_REGION: eu-west-1
+        run: python scripts/posture_check.py --fail-on-critical

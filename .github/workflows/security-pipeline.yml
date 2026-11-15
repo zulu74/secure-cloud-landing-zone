@@ -86,12 +86,17 @@ jobs:
           fi
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to 0.35.0 specifically: this is the first immutable release
+        # after CVE-2026-33634, a supply-chain attack where nearly every
+        # prior tag (0.0.1–0.34.2) was force-pushed to a malicious commit.
+        # Never pin this action to an older tag or to "latest".
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: security-pipeline-app:ci
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          ignore-unfixed: true # don't fail the build on OS-level CVEs with no patch available yet — those can't be remediated by us and would make every build red forever
           exit-code: 1 # fail the build on critical/high CVEs
 
       - name: Upload Trivy SARIF
